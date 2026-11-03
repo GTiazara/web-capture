@@ -1,0 +1,59 @@
+[project]
+name = "web-capture"
+version = "0.1.0"
+description = "Capture périodique, diffusion en direct et enregistrement du rendu d'un onglet Chromium."
+readme = "README.md"
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "playwright (>=1.48,<2.0)",
+    "aiohttp (>=3.10,<4.0)",
+    "omegaconf (>=2.3,<3.0)",
+    "imageio-ffmpeg (>=0.5,<1.0)",
+]
+
+[project.scripts]
+web-capture = "web_capture.entrypoints.cli:main"
+
+[tool.poetry]
+packages = [{ include = "web_capture", from = "src" }]
+include = [{ path = "src/web_capture/adapters/http/static/*.html", format = ["sdist", "wheel"] }]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3"
+pytest-asyncio = "^0.24"
+pytest-cov = "^6.0"
+ruff = "^0.8"
+mypy = "^1.13"
+pillow = "^11.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "ASYNC", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "src"
+packages = ["web_capture"]
+
+[[tool.mypy.overrides]]
+module = ["imageio_ffmpeg.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "integration: tests utilisant un vrai Chromium ou un vrai serveur réseau",
+    "ffmpeg: tests utilisant un vrai encodeur ffmpeg",
+]

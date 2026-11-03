@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="fr">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>web-capture — viewer</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            font-family: system-ui, sans-serif;
+        }
+
+        body {
+            margin: 0;
+            background: #111;
+            color: #ddd;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        header {
+            display: flex;
+            flex-wrap: wrap;
+            gap: .75rem 1.25rem;
+            align-items: center;
+            padding: .5rem .75rem;
+            background: #1c1c1c;
+            border-bottom: 1px solid #333;
+        }
+
+        header .group {
+            display: flex;
+            gap: .4rem;
+            align-items: center;
+        }
+
+        .stat b {
+            font-variant-numeric: tabular-nums;
+            color: #fff;
+        }
+
+        #conn {
+            padding: .1rem .5rem;
+            border-radius: .25rem;
+            font-size: .85rem;
+        }
+
+        #conn.up {
+            background: #1d5e2b;
+        }
+
+        #conn.down {
+            background: #7a1f1f;
+        }
+
+        #error {
+            color: #ff8080;
+            min-height: 1.2em;
+            padding: 0 .75rem;
+            font-size: .9rem;
+        }
+
+        main {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        canvas {
+            max-width: 100%;
+            max-height: 100%;
+            background: #000;
+        }
+
+        input[type=number] {
+            width: 5rem;
+        }
+
+        button,
+        input {
+            font: inherit;
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <span id="conn" class="down">déconnecté</span>
+        <span class="stat">seq <b id="seq">-</b></span>
+        <span class="stat">capture <b id="ts">-</b></span>
+        <span class="stat">réception <b id="rx-fps">0.0</b> FPS</span>
+        <span class="stat">latence <b id="latency">-</b> ms</span>
+        <span class="group">
+            <label for="fps-input">FPS</label>
+            <input id="fps-input" type="number" min="0.1" max="30" step="0.1" value="10">
+            <button id="fps-apply" type="button">Appliquer</button>
+        </span>
+        <span class="group">
+            <button id="pause" type="button">Pause</button>
+            <button id="resume" type="button">Reprendre</button>
+        </span>
+        <span class="group">
+            <button id="rec-start" type="button">● Enregistrer</button>
+            <button id="rec-stop" type="button">■ Arrêter</button>
+            <span id="rec-state" class="stat"></span>
+        </span>
+    </header>
+    <div id="error" role="alert"></div>
+    <main><canvas id="view" width="1280" height="720"></canvas></main>
+    <script>
+        "use strict";
+        (() => {
+            const $ = (id) => document.getElementById(id);
+            const canvas = $("view");
+            const ctx = canvas.getContext("2d");
+            const wsBase = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
+            const decoder = new TextDecoder();
+            const rxTimes = [];
+            let framesWs = null;
+            let controlWs = null;
+            let backoffMs = 1000;
+            let nextId = 1;
+            const pending = new Map();
+
+            function setConnected(up) {
+                const el = $("conn");
+                el.textContent = up ? "connecté" : "déconnecté";
+                el.className = up ? "up" : "down";
+            }
+
+            function showError(message) {
+                $("error").textContent = message || "";
+            }
+
+            function scheduleReconnect() {
+                setConnected(false);
+                const delay = backoffMs;
+                backoffMs = Math.min(backoffMs * 2, 5000);
+                setTimeout(connect, delay);
+            }
+
+            async function onFrame(buffer) {
+                const view = new DataView(buffer);
+                const headerLength = view.getUint32(0, false);
+                const header = JSON.parse(decoder.decode(new Uint8Array(buffer, 4, headerLength)));
+                const blob = new Blob([new Uint8Array(buffer, 4 + headerLength)], { type: "image/jpeg" });
+                const bitmap = await createImageBitmap(blob);
+                if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+                    canvas.width = bitmap.width;
+                    canvas.height = bitmap.height;
+                }
+                ctx.drawImage(bitmap, 0, 0);
+                bitmap.close();
+
+                const now = Date.now();
+                rxTimes.push(now);
+                while (rxTimes.length && rxTimes[0] < now - 1000) rxTimes.shift();
+                $("seq").textContent = String(header.seq);
+                $("ts").textContent = new Date(header.ts_wall_ms).toLocaleTimeString(undefined, { hour12: false }) +
+                    "." + String(header.ts_wall_ms % 1000).padStart(3, "0");
+                $("rx-fps").textContent = rxTimes.length.toFixed(1);
+                $("latency").textContent = String(now - header.ts_wall_ms);
+            }
+
+            function connect() {
+                let opened = 0;
+                const onOpen = () => {
+                    opened += 1;
+                    if (opened === 2) {
+                        backoffMs = 1000;
+                        setConnected(true);
+                        refreshStatus();
+                    }
+                };
+                let closed = false;
+                const onClose = () => {
+                    if (closed) return;
+                    closed = true;
+                    for (const ws of [framesWs, controlWs]) if (ws && ws.readyState <= 1) ws.close();
+                    for (const [, reject] of pending.values()) reject(new Error("connexion perdue"));
+                    pending.clear();
+                    scheduleReconnect();
+                };
+
+                framesWs = new WebSocket(wsBase + "/frames?mode=latest");
+                framesWs.binaryType = "arraybuffer";
+                framesWs.onopen = onOpen;
+                framesWs.onclose = onClose;
+                framesWs.onmessage = (event) => { onFrame(event.data).catch((e) => showError("image illisible : " + e)); };
+
+                controlWs = new WebSocket(wsBase + "/control");
+                controlWs.onopen = onOpen;
+                controlWs.onclose = onClose;
+                controlWs.onmessage = (event) => {
+                    const resp = JSON.parse(event.data);
+                    const entry = pending.get(resp.id);
+                    if (!entry) return;
+                    pending.delete(resp.id);
+                    entry[0](resp);
+                };
+            }
+
+            function command(cmd, extra) {
+                return new Promise((resolve, reject) => {
+                    if (!controlWs || controlWs.readyState !== WebSocket.OPEN) {
+                        reject(new Error("non connecté"));
+                        return;
+                    }
+                    const id = nextId++;
+                    pending.set(id, [resolve, reject]);
+                    controlWs.send(JSON.stringify(Object.assign({ id, cmd }, extra || {})));
+                });
+            }
+
+            async function run(cmd, extra) {
+                try {
+                    const resp = await command(cmd, extra);
+                    if (resp.ok) showError("");
+                    else showError(resp.error);
+                    await refreshStatus();
+                    return resp;
+                } catch (e) {
+                    showError(String(e.message || e));
+                    return null;
+                }
+            }
+
+            async function refreshStatus() {
+                try {
+                    const status = await command("status");
+                    if (!status.ok) return;
+                    if (document.activeElement !== $("fps-input")) $("fps-input").value = String(status.fps);
+                    const rec = status.recording;
+                    $("rec-state").textContent = rec && rec.state !== "idle" ? "enregistrement : " + rec.file : "";
+                } catch (_) { /* déconnecté : géré par la reconnexion */ }
+            }
+
+            $("fps-apply").addEventListener("click", () => run("set_fps", { fps: Number($("fps-input").value) }));
+            $("fps-input").addEventListener("keydown", (e) => { if (e.key === "Enter") $("fps-apply").click(); });
+            $("pause").addEventListener("click", () => run("pause"));
+            $("resume").addEventListener("click", () => run("resume"));
+            $("rec-start").addEventListener("click", () => run("start_recording"));
+            $("rec-stop").addEventListener("click", () => run("stop_recording"));
+
+            connect();
+        })();
+    </script>
+</body>
+
+</html>

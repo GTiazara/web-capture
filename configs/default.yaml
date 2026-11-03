@@ -1,0 +1,40 @@
+# Configuration par défaut de web-capture.
+# Priorité : valeurs intégrées < ce fichier (--config) < surcharges `section.clé=valeur` en CLI.
+
+browser:
+  # URL ouverte dans l'onglet cible (obligatoire).
+  url: ???
+  # true : pas de fenêtre ; recommandé pour une capture sans surveillance.
+  headless: false
+  # Taille du viewport en pixels CSS.
+  viewport:
+    width: 1280
+    height: 720
+
+capture:
+  # Images par seconde, entre 0.1 et 30 ; modifiable à chaud via /control.
+  fps: 10.0
+  # Zone en pixels CSS relatifs au viewport, ou null pour le viewport complet.
+  # Exemple : {x: 100, y: 50, width: 400, height: 300}
+  zone: null
+  # Qualité JPEG des images, entre 1 et 100.
+  jpeg_quality: 80
+
+streaming:
+  # Nombre d'images conservées dans le buffer circulaire.
+  buffer_size: 60
+  # Délai au-delà duquel un abonné qui ne lit plus est déconnecté.
+  send_timeout_s: 10.0
+
+server:
+  # Adresse d'écoute ; laisser sur une adresse locale sauf besoin explicite.
+  host: 127.0.0.1
+  port: 8765
+
+recording:
+  # Répertoire de sortie des fichiers MP4 (créé si besoin).
+  output_dir: ./recordings
+
+logging:
+  # DEBUG, INFO, WARNING, ERROR ou CRITICAL.
+  level: INFO
